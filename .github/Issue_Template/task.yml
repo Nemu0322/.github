@@ -1,0 +1,32 @@
+name: LT会タスク登録
+description: タスク種別から担当者・ラベル・期限を自動設定します
+title: "[LT] "
+labels: ["lt-task"]
+body:
+  - type: dropdown
+    id: task_type
+    attributes:
+      label: タスク種別
+      description: 自動設定のルールを選んでください
+      options:
+        - 登壇者募集開始
+        - SNS告知
+        - 会場・機材確認
+        - 最終チェック
+        - 振り返り
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: 作業内容
+      description: 何をするか具体的に記入
+    validations:
+      required: true
+  - type: textarea
+    id: criteria
+    attributes:
+      label: 完了条件
+      description: 何をもって完了とするか記入
+    validations:
+      required: true

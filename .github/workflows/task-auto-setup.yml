@@ -1,0 +1,108 @@
+name: Reusable LT Task Auto Setup
+
+on:
+  workflow_call:
+    inputs:
+      config_path:
+        description: "利用側リポジトリのルールファイル"
+        required: false
+        default: .github/task-rules.json
+        type: string
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Set assignees, labels and due date
+        uses: actions/github-script@v9
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+        with:
+          script: |
+            const issue = context.payload.issue;
+            if (!issue || issue.pull_request) return;
+            const { owner, repo } = context.repo;
+            const issue_number = issue.number;
+
+            const configResponse = await github.rest.repos.getContent({
+              owner, repo, path: process.env.CONFIG_PATH
+            });
+            if (Array.isArray(configResponse.data) || !configResponse.data.content) {
+              throw new Error('ルールファイルが読み取れません');
+            }
+            const config = JSON.parse(Buffer.from(
+              configResponse.data.content, 'base64'
+            ).toString('utf8'));
+            const body = issue.body || '';
+            const match = body.match(/^### タスク種別\r?\n(?:[ \t]*\r?\n)*([^\r\n]+)/m);
+            if (!match) {
+              core.warning('タスク種別が見つからないため処理をスキップ');
+              return;
+            }
+            const type = match[1].trim();
+            const rule = config.tasks?.[type];
+            if (!rule) {
+              core.warning(`未定義のタスク種別: ${type}`);
+              return;
+            }
+
+            const dateText = config.event_date;
+            const event = new Date(`${dateText}T00:00:00Z`);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText) ||
+                Number.isNaN(event.getTime()) ||
+                event.toISOString().slice(0, 10) !== dateText) {
+              throw new Error('event_dateは有効なYYYY-MM-DD形式が必要です');
+            }
+            if (!Number.isInteger(rule.offset_days)) {
+              throw new Error(`offset_daysは整数が必要です: ${type}`);
+            }
+            const dueDate = new Date(event.getTime() + rule.offset_days * 86400000);
+            const due = dueDate.toISOString().slice(0, 10);
+
+            const assignees = Array.isArray(rule.assignees) ? rule.assignees : [];
+            const labelsForTask = Array.isArray(rule.labels) ? rule.labels : [];
+            if (!assignees.length || assignees.some(u => !u || u.startsWith('REPLACE_'))) {
+              throw new Error(`担当者のGitHubユーザー名を設定してください: ${type}`);
+            }
+            const allAutoLabels = new Set(
+              Object.values(config.tasks).flatMap(t => t.labels || [])
+            );
+            const remaining = issue.labels.map(l => l.name).filter(l => !allAutoLabels.has(l));
+            const labels = [...new Set([...remaining, 'lt-task', ...labelsForTask])];
+            const original = body.replace(
+              /\n*<!-- lt:auto:start -->[\s\S]*?<!-- lt:auto:end -->/g, ''
+            ).trimEnd();
+            const nextBody = `${original}\n\n<!-- lt:auto:start -->\n### 自動設定\n\n- 期限: ${due}\n- タスク種別: ${type}\n<!-- lt:auto:end -->`;
+            const sameArray = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+            const oldAssignees = (issue.assignees || []).map(a => a.login);
+            const oldLabels = issue.labels.map(l => l.name);
+            if (nextBody !== body ||
+                !sameArray(oldAssignees, assignees) ||
+                !sameArray(oldLabels, labels)) {
+              await github.rest.issues.update({
+                owner, repo, issue_number, body: nextBody, assignees, labels
+              });
+            }
+
+            // 追加設定: Issue fieldsにDateフィールドがある場合は値も設定
+            const fieldId = config.target_date_field_id;
+            if (Number.isInteger(fieldId) && fieldId > 0) {
+              const headers = { 'X-GitHub-Api-Version': '2026-03-10' };
+              const current = await github.request(
+                'GET /repos/{owner}/{repo}/issues/{issue_number}/issue-field-values',
+                { owner, repo, issue_number, headers }
+              );
+              const existing = current.data.find(x => x.issue_field_id === fieldId);
+              if (existing?.value !== due) {
+                await github.request(
+                  'POST /repos/{owner}/{repo}/issues/{issue_number}/issue-field-values',
+                  { owner, repo, issue_number, headers,
+                    issue_field_values: [{ field_id: fieldId, value: due }] }
+                );
+              }
+            }
+            core.info(`自動設定済み: ${type} / ${due} / ${assignees.join(', ')}`);
