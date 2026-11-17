@@ -1,0 +1,15 @@
+
+name: Issue Management
+
+on:
+  issues:
+    types: [opened, assigned, unassigned, labeled, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  assignee-check:
+    uses: Nemu0322/issue-workflows/.github/workflows/assignee-check.yml@main
+    with:
+      task_label: "lt-task"
